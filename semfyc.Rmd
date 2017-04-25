@@ -1,0 +1,415 @@
+---
+title: "Proyecto ICC - Memoria FIS 2013"
+output:
+  html_document: default
+  word_document:
+    fig_caption: yes
+    fig_height: 4
+    fig_width: 10
+---
+## Lectura y preparacion de datos
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+```
+
+```{r cargarDatosLibrerias, echo = FALSE,warning=FALSE, message=FALSE}
+# setwd("~/ICC/Ines/03. Continuacion Ines/Articulo_1")
+setwd("~/Documents/LHS/ICC/memoria_fis")
+# ultimos datos maider
+load("~/Documents/LHS/ICC/data/11. Ingresos anteriores.RData")
+# Borramos lo que no nos hace falta
+# rm(ap, cexternas, hdia, hdom, ing, ing_sec, mental, proc, visitas_ae, visitas_ap, visitas_urg)
+# Cargar librerias
+library(dplyr)
+library(reshape2)
+library(ggplot2)
+library(lubridate)
+library(stringr)
+library(lme4)
+```
+
+```{r funcionesPropias}
+source("~/Documents/LHS/ICC/RCode/funcionesR.R")
+rellenar_var <- function(grupo, df){#grupo_propio = "dm"
+  # Al data frame df (estructura id * grupo_propio y variable var), rellena var con un 1 si
+  # el paciente, en el grupo "grupo", ha sido diagnosticado en AP.
+  # Si el paciente NO ha sido diagnosticado en AP en el grupo, entonces mantiene la variable original
+  # - que indica si ha sido diagnosticado por alguna de las fuentes (=0) o no (=NA)
+  # Par?metros:
+  ## grupo diagnostico
+  ## df: data frame con estructura indicada.
+  #seleccionar filas del grupo en pdf
+  var_ap <- paste0(grupo, "_ap")
+  #en dat0, buscamos si est? diagnosticado en AP
+  dat0 <- dat0[dat0[,var_ap] == 1, ]
+  df <- df %>% mutate(ind = ifelse(id %in% dat0$id & grupo_propio == grupo, 1, 0))
+  df[df$ind == 1, "var"] <- 1
+  #
+  return(df)
+}
+```
+
+## Construir la cohorte
+```{r transformacionesDat}
+# Reconstruir base de datos madre, dat, con los 14.135 casos
+dat <- socio[,c("id", "edad", "fnac", "sexo", "comarca", "coduap", "uap", "privacion", "falta_ing1","estancia1", "fmort", "situacion", "tis")]
+# Generar la bd dat limpia (con 14.135 casos)
+dat <- dat %>% 
+  filter(falta_ing1 > as.Date("2010-12-31")) %>% # alta ingreso posterior a 01-01-2011
+  filter(edad >= 40) %>% 
+  filter(tis == "TIS") %>%  #pacientes con TIS
+  filter(situacion != "Traslado") %>% 
+  filter(situacion %in% c("Vigente", "Defunción")) %>% #situacion. Hasta aqu? 14.491 pacientes
+  filter(comarca != "OSI TOLOSALDEA") %>% 
+  filter(comarca != "SIN DETERMINAR") %>% 
+  filter(uap != "RIOJA") %>% 
+  filter(is.na(fmort) | falta_ing1 < fmort)  #no fallecidos o fallecidos despu?s
+# Eliminar niveles no usados
+# nrow(dat) #14135
+dat$comarca <- droplevels(dat$comarca)
+dat$tis <- droplevels(dat$tis)
+dat$situacion <- droplevels(dat$situacion)
+dat$uap <- droplevels(dat$uap)
+#
+#-- Edad agrupada
+dat <- dat %>% mutate(grupo_edad = ifelse(edad <= 64, "40-64", ifelse(edad <= 79, "65-79",ifelse(edad <= 89,"80-89","90+"))))
+dat$grupo_edad <- factor(dat$grupo_edad)
+#
+# cambiar etiquetas de comarca
+levels(dat$comarca)[9] <- "OSI EZK. ENKR. CRUCES"
+levels(dat$comarca) <- str_replace(string = levels(dat$comarca), pattern = "OSI ", replacement = "")
+#-- Anyo alta primer ingreso
+dat <- dat %>% mutate(anyo_faltaing1 = format(dat$falta_ing1, "%Y"))
+dat$anyo_faltaing1 <- factor(dat$anyo_faltaing1)
+#-- Inicio del ingreso indice (se deduce de los dias de estancia, variable estancia1)
+dat$finicio_ing1 <- dat$falta_ing1 - dat$estancia1
+```
+
+```{r recuperarMedeaUAP}
+#recuperamos el indice Medea a nivel UAP a traves del data frame socio
+# medea <- read.csv2("D:/perfiles/72480965F/Mis Documentos/ICC/Ines/03. Continuacion Ines/Medea/ip_agregado por UAP.CSV")
+medea <- read.csv2("/Users/ines/Documents/LHS/ICC/data/ip_agregado por UAP.csv")
+names(medea)[2] <- "coduap"
+names(medea)[7] <- "indice_medea"
+#
+dfsocio <- socio[c("uap", "coduap")]
+dfsocio <- merge(x = dfsocio, y = medea[, c("coduap", "indice_medea")], all.x = TRUE)
+dfsocio <- dfsocio[c("uap", "indice_medea")]
+dfsocio <- unique(dfsocio)
+#
+dat <- merge(x = dat, y = dfsocio, all.x = TRUE, by = "uap")
+rm(medea, dfsocio)
+```
+
+```{r transformacionesDatSoloIncidentes}
+# Identificar a los pacientes que han tenido un ingreso previo por ICC.
+# El objetivo es trabajar sobre la base de los incidentes (los que ingresan por primera vez)
+### identificar, en dat, a los incidentes (primer ingreso por ICC)
+# Para cada paciente de dat, fecha del primero de los ingresos anteriores a 2010
+dat0 <- dat %>% filter(!(dat$id %in% ing_pre$id))
+# Limpiar workspace
+# rm(ing_pre)
+```
+
+## Seleccion diagnosticos
+
+```{r calculosPreviosDiagnosticos}
+# 1. dx solo de los pacientes de dat0
+dx <- dx %>% filter(dx$id %in% dat0$id) #353291
+# 2. Traernos fecha ingreso indice, comarca, estancia
+# Traemos las fechas de primer ingreso
+dx <- merge(x = dx, y = dat0[,c("id", "comarca", "falta_ing1", "estancia1")], by = "id", all.x = TRUE) 
+# Niveles de comarca
+levels(dx$comarca)[9] <- "OSI EZK. ENKR. CRUCES"
+levels(dx$comarca) <- str_replace(string = levels(dx$comarca), pattern = "OSI ", replacement = "")
+# 3. Calcular la fecha de primer ingreso menos 12 meses
+dx$falta_ing1_12m <- dx$falta_ing1 %m-% years(1)
+# 4. Calcular la fecha del primer ingreso mas 15 dias
+dx$falta_ing1_post15d <- dx$falta_ing1 + days(15)  
+# 5. Calcular el inicio de la estancia indice
+dx$finicio_ing1 <- dx$falta_ing1 - days(dx$estancia1)
+```
+
+### Diagnosticos de AP
+
+```{r dgAPAlta}
+# Identificar los diagnosticos de AP iniciados antes y que estaban abiertos en el momento del alta (sin cerrar, o cerrados despues)
+dx.ap <- dx %>% filter(tipo == "ap")
+dx.ap.alta <- dx.ap %>% filter(is.na(ffin) | ffin > falta_ing1, finicio <= falta_ing1)
+#identificar
+dx.ap.alta$fuente <- "ap_previo"
+```
+
+```{r dgAPAlta15d}
+# Dg de AP 15 dias despues del alta del ingreso indice. Consultar con Edu.
+dx.ap.alta15d <- dx.ap %>% filter(finicio >= finicio_ing1 & finicio <= falta_ing1_post15d )
+#identificar
+dx.ap.alta15d$fuente <- "ap_15d_post"
+```
+
+### Diagnosticos hospitalarios
+
+```{r dgHospisAlta}
+# Ingresos hospitalarios (primarios y secundarios) - desde el ingreso hasta el alta ingreso indice (inclusive)
+dx.hospi <- dx %>% filter(tipo %in% c("hosp_pri", "hosp_sec"))
+#estimamos la fecha de inicio a partir del dato de dias de estancia
+#(Otra opcion es acudir a la bd ing, pero el peligro es no duplicar filas)
+# dx.hospi$finicio_ing1 <- dx.hospi$falta_ing1 - days(dx.hospi$estancia1)
+# Diagnosticos que entren en fechas
+dx.hospi$momento <- ifelse(dx.hospi$finicio >= dx.hospi$finicio_ing1 & dx.hospi$ffin <= dx.hospi$falta_ing1, "ingreso", "otro")
+# table(dx.hospi$momento, useNA = "ifany")
+# por otro lado, los que tienen fecha fin el alta del ingreso indice:
+dx.hospi %>% filter(ffin == falta_ing1) %>% nrow() #perderiamos algunas...
+#
+dx.hospi.alta <- dx.hospi %>% filter(momento == "ingreso")
+# Recuento diagrama: excluidos dg ICC
+# dx.hospi.alta %>% filter(grupo_propio != "icc") %>% nrow()
+dx.hospi.alta$fuente <- "hospi_alta"
+#
+dx.hospi.alta$momento <- NULL
+dx.hospi$momento <- NULL
+```
+
+```{r dgHospiPrevios}
+# todos los iniciados antes del ingreso tienen fecha de fin.
+dx.hospi.previos <- dx.hospi %>% filter(finicio < finicio_ing1 & ffin < finicio_ing1)
+dx.hospi.previos$fuente <- "hospi_ing_previos"
+```
+
+### Otras fuentes
+```{r dgRestoFuentes}
+# Consultas Externas
+dx.resto <- dx %>% filter(tipo %in% c("cexternas", "hdia", "hdom", "mental"))
+dx.resto.alta <- dx.resto %>% filter(is.na(ffin) | ffin > falta_ing1, finicio <= falta_ing1)
+# dx.resto %>% filter(finicio <= falta_ing1) %>% nrow()
+dx.resto.alta$fuente <- as.factor(paste0(dx.resto.alta$tipo, "_previo"))
+```
+
+### Fusionar
+```{r}
+#--- Registro AP. 
+# Incluye dx previos al ingreso indice + Iniciados en los 15 dias posteriores al alta
+dx.ap.alta %>% nrow() #dx.ap.alta %>% unique() %>% nrow()
+dx.ap.alta15d %>% nrow()
+dx.registro.ap <- rbind(dx.ap.alta, dx.ap.alta15d) #dx.registro.ap %>% unique %>% nrow(), ok
+#--- Registro Hospital
+# Incluye dx previos al ingreso indice + Iniciados durante la estancia en el hospital
+dx.hospi.alta %>% nrow()
+dx.hospi.previos %>% nrow()
+dx.registro.hospi <- rbind(dx.hospi.alta, dx.hospi.previos) #dx.registro.hospi %>% unique() %>% nrow(); no hay repetidos, ok
+#--- Registro Resto Fuentes
+# Para el resto de fuentes: cexternas, hdia, hdom, mental, se toman los iniciados antes y abiertos en el momento del alta
+dx.resto.alta %>% nrow()
+#--- Unir todos (Registro completo, con todas las fuentes)
+dx.registro <- rbind(dx.registro.ap, dx.registro.hospi, dx.resto.alta)
+table(dx.registro$tipo, dx.registro$fuente)
+```
+
+```{r seleccionFinal}
+# Por su insignificancia, eliminamos los dg de salud mental y hospital a domicilio
+dx.registro <- dx.registro %>% filter(tipo %in% c("ap", "cexternas", "hosp_pri", "hosp_sec"))
+#Registros a comparar (AP vs Todos)
+nrow(dx.registro)
+nrow(dx.registro.ap)
+```
+
+## Calculo de variables binarias
+
+### Binarias basadas en grupos CCS
+```{r calculoBinarias}
+gruposCCS <- levels(dx.registro$grupo_propio)
+# Excluir icc
+# gruposCCS <- gruposCCS[-which(gruposCCS == "icc")]
+# Binarias basadas en el registro completo
+for(g in 1:length(gruposCCS)){#g= 18-dm
+  grupog <- gruposCCS[g]
+  dat0 <- binarias_grupo(dat = dat0, dx = dx.registro, grupo = grupog, etiqueta = "_dx")
+}
+# Binarias basadas solo en AP
+for(g in 1:length(gruposCCS)){#g= 18-dm
+  grupog <- gruposCCS[g]
+  dat0 <- binarias_grupo(dat = dat0, dx = dx.registro.ap, grupo = grupog, etiqueta = "_ap")
+}
+```
+
+```{r prevalenciasBinarias}
+#---- Basadas en registro completo
+dfpreval <- as.data.frame(gruposCCS)
+npreval <- sapply(X = 1:length(gruposCCS), FUN = function(x){
+        sum(dat0[, paste0(gruposCCS[x], "_dx")]) 
+})
+preval <- sapply(X = 1:length(gruposCCS), FUN = function(x){
+        round(sum(dat0[, paste0(gruposCCS[x], "_dx")]) / nrow(dat0) * 100, 1)
+})
+dfpreval$npreval <- npreval
+dfpreval$preval <- preval
+#---- Basadas en AP.
+dfprevalAP <- as.data.frame(gruposCCS)
+nprevalAP <- sapply(X = 1:length(gruposCCS), FUN = function(x){
+        sum(dat0[, paste0(gruposCCS[x], "_ap")]) 
+})
+prevalAP <- sapply(X = 1:length(gruposCCS), FUN = function(x){
+        round(sum(dat0[, paste0(gruposCCS[x], "_ap")]) / nrow(dat0) * 100, 1)
+})
+dfprevalAP$npreval <- nprevalAP
+dfprevalAP$preval <- prevalAP
+#fusionar
+names(dfpreval) <- str_replace(string = names(dfpreval), pattern = "preval", replacement = "preval_dx" )
+names(dfprevalAP) <- str_replace(string = names(dfprevalAP), pattern = "preval", replacement = "preval_ap" )
+#
+dfpreval <- merge(x = dfpreval, y = dfprevalAP, by = c("gruposCCS"))
+dfpreval <- dfpreval %>% arrange(desc(preval))
+# Distancias (Sensibilidad AP)
+dfpreval$sensib_ap <- round(dfpreval$npreval_ap / dfpreval$npreval_dx * 100, 1)
+# Exportar a csv
+write.csv2(x = dfpreval, file = "semfyc.csv",sep = ";")
+```
+
+
+### Charlson
+```{r calculoCharlsonAmbas}
+cat("Charlson basado en el registro completo")
+dat0 <- calculo_Charlson(dat = dat0, dx = dx.registro)
+# grep(pattern = "^char", x = names(dat0), value = TRUE)
+# names(dat0) <- str_replace(string = names(dat0), pattern = "^char_", replacement = "char_hospi_")
+# names(dat0) <- str_replace(string = names(dat0), pattern = "charlson", replacement = "charlson_hospi")
+```
+
+```{r categoriasCharlson}
+# summary(dat0$charlson)
+dat0$charlson_cat <- ifelse(dat0$charlson <= 2, "Bajo", 
+                            ifelse(dat0$charlson <= 4, "Medio", 
+                                   ifelse(dat0$charlson >= 5, "Alto", "error")))
+dat0$charlson_cat <- factor(dat0$charlson_cat, levels = c("Bajo", "Medio", "Alto"))
+```
+
+```{r numComponentesCharlson}
+# Nº de componentes de Charlson totales por paciente
+vars <- grep(pattern = "^char_", names(dat0), value = TRUE)
+dfvars <- as.data.frame(rowSums(dat0[, vars]))
+names(dfvars) <- "nchar"
+dat0$ncharlson <- dfvars$nchar
+```
+
+```{r prevalenciasCharlson}
+#---- Basadas en hospi + AP.
+vars <- grep(pattern = "char_", x = names(dat0), value = TRUE) #17 variables, ok
+dfpreval <- as.data.frame(vars)
+dfpreval$vars <- str_replace(string = dfpreval$vars, pattern = "char_", replacement = "")
+names(dfpreval) <- "patol"
+#
+patologias <- dfpreval$patol
+preval <- sapply(X = 1:length(patologias), FUN = function(x){ #x=1
+        round(sum(dat0[, paste0("char_", patologias[x])]) / nrow(dat0) * 100, 1)
+})
+dfpreval$preval <- preval
+```
+
+
+## Cifras para el poster
+```{r cifrasBasicas}
+# DG anotados
+nrow(dx.registro)
+table(dx.registro$tipo)
+dx.registro$tipo <- droplevels(dx.registro$tipo )
+# DG no redundantes
+dx.registro <- dx.registro %>% arrange(id)
+# consideramos un dg redundante si se encuentra en mas de una fuente
+head(dx.registro) #11115079
+# un paciente recibe varias veces dg por el mismo grupo propio: (1) en distintas fuentes; (2) misma fuente pero distintos instantes o niveles (primario/secundario en ingresos hospitalarios)
+df <- dx.registro %>% group_by(id, grupo_propio) %>% summarise(n = n())
+#no-redundantes:
+table(df$n ) #primera fila: 1 sola vez
+# ¿cuantos se recogen en ap?
+df1 <- dx.registro %>% group_by(id, tipo, grupo_propio) %>% summarise(n = n())
+#
+df %>% filter(id == 11115079)
+df1 %>% filter(id == 11115079)
+table(df1$tipo)
+```
+
+## Modelo mixto
+```{r construirDF}
+#Objetivo: para cada combinacion (id, grupo propio) crear una variable categorica var
+# que valga:
+#--NA, si el paciente no ha sido diagnosticado en ninguna fuente
+#--dx ( =0), ha sido diagnosticado (registro completo)
+#--ap ( = 1), ha sido diagnosticado en AP.
+# bd con una fila por combinacion de id, diagnostico (recibido)
+#luego refinamos si el dx = 1 es dx_ap = 1 o dx_ap = 0
+df2 <- as.data.frame(dat0[, "id"])
+names(df2) <- "id"
+grupos <- levels(dx.registro$grupo_propio)
+# grupos <- levels(dx$grupo_propio)[-which(levels(dx$grupo_propio)== "icc")]
+length(grupos)
+df2 <- merge(x = df2, y = as.data.frame(grupos))
+names(df2)
+df2 <- df2 %>% arrange(id)
+names(df2)[2] <- "grupo_propio"
+#
+df <- dx.registro %>% select(id, grupo_propio) %>% unique
+df <- df %>% mutate(var = 0) #diagnostico en cualquier fuente
+#incluir diagnosticos que faltan para cada paciente, seran NA's.
+df <- merge(x = df2, y = df, all.x = TRUE)
+#comprobacion
+# table(df[df$grupo_propio == "dm", ]$var, useNA = "ifany")
+# table(dat0$dm_dx)
+#ya tenemos la estructura; ahora la rellenamos
+for(i in 1:length(grupos)){#i = 1
+  grupo = grupos[i]
+  df <- rellenar_var(grupo = grupo, df = df)
+}
+#Limpiar
+df$ind <- NULL
+rm(df2)
+#--- Anyadir edad, sexo, comarca
+df <- merge(x = df, y = dat0[, c("id", "grupo_edad", "sexo", "comarca", "uap")])
+```
+
+```{r modelizacion}
+mod1 <- glmer(var ~ sexo + grupo_edad + (1|id) + (1|comarca)+ (1|uap) + (1|grupo_propio), family = binomial, data = df)
+summary(mod1)
+mod2 <- glmer(var ~ sexo + grupo_edad + (1|id) + (1|uap) + (1|grupo_propio), family = binomial, data = df)
+summary(mod2)
+mod3 <- glmer(var ~ sexo + grupo_edad + comarca + (1|grupo_propio), family = binomial, data = df)
+summary(mod3)
+#
+# CI para las comarcas (modelo 3)
+#http://stats.idre.ucla.edu/r/dae/mixed-effects-logistic-regression/
+se <- sqrt(diag(vcov(mod3)))
+(tab <- cbind(Est = fixef(mod3), LL = fixef(mod3) - 1.96 * se, UL = fixef(mod3) + 1.96 *
+    se))
+exp(tab)
+```
+
+```{r graficos_bruto}
+dfpreval <- dfpreval %>% filter(gruposCCS != "electrolitos")
+dfpreval <- dfpreval %>% arrange(preval_dx)
+dfpreval$gruposCCS <- factor(dfpreval$gruposCCS, levels = as.character(dfpreval$gruposCCS))
+#levels(dfpreval$gruposCCS) 
+
+ggplot(data = dfpreval, aes(x = gruposCCS, y = preval_dx, colour = "Hospital+CE+AP")) +
+        geom_point(stat = "identity",size = 1.5) + 
+        geom_line(stat = "identity", aes(group = 1, colour = "Hospital+CE+AP"),linetype = 2) + 
+        geom_point(data = dfpreval, aes(x = gruposCCS, y = preval_ap, colour = "Atencion Primaria (AP)"), stat = "identity", size = 1.5) + 
+        geom_line(data = dfpreval, aes(x = gruposCCS, y = preval_ap, colour = "Atencion Primaria (AP)", group = 1), stat = "identity",linetype = 3) + xlab("")+ ylab("% pacientes diagnosticados") +
+        # geom_text(data = dfpreval, aes(x = gruposCCS, y = preval_ap, label = preval_ap, group = 1), size = 3, col = "orange", hjust = 2) +
+        coord_flip() +
+        scale_color_manual(name = "Registro:", values=c('Hospital+CE+AP'="blue", 'Atencion Primaria (AP)'="orange")) +
+        theme( legend.position = "bottom")
+```
+
+```{r grafico_Sensibilidad}
+dfpreval <- dfpreval %>% filter(gruposCCS != "electrolitos")
+dfpreval <- dfpreval %>% arrange(sensib_ap)
+dfpreval$gruposCCS <- factor(dfpreval$gruposCCS, levels = as.character(dfpreval$gruposCCS))
+
+ggplot(data = dfpreval, aes(x = gruposCCS, y = sensib_ap)) + 
+        geom_point(stat = "identity",size = 1.5, col = "blue") + 
+        geom_line(stat = "identity", aes(group = 1),linetype = 2, col = "blue") +
+         geom_text(data = dfpreval, aes(x = gruposCCS, y = sensib_ap, label = paste0(sensib_ap, "%"), group = 1), size = 3, col = "grey60", hjust = 1) +
+        coord_flip()
+        
+```
+
