@@ -1,2 +1,3 @@
-# Calculos poster Congreso SEMFyC
+# Calculos poster Congreso SEMFyC, abril de 2017
 Calculos para poster Semfyc - proyecto cohorte ICC
+Objetivo: evaluar hasta que punto se registran en AP los diagnosticos cronicos de los pacientes en la cohorte de icc. Graficos con los valores brutos (pacientes diagnosticados en AP vs total pacientes diagnosticados, por patologia cronica) y modelos mixtos con grupo de edad, sexo, comarca,...
