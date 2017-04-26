@@ -15,7 +15,7 @@ knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
 
 ```{r cargarDatosLibrerias, echo = FALSE,warning=FALSE, message=FALSE}
 # setwd("~/ICC/Ines/03. Continuacion Ines/Articulo_1")
-setwd("~/Documents/LHS/ICC/memoria_fis")
+setwd("~/Documents/LHS/ICC/semfyc")
 # ultimos datos maider
 load("~/Documents/LHS/ICC/data/11. Ingresos anteriores.RData")
 # Borramos lo que no nos hace falta
@@ -30,7 +30,7 @@ library(lme4)
 ```
 
 ```{r funcionesPropias}
-source("~/Documents/LHS/ICC/RCode/funcionesR.R")
+source("~/Documents/LHS/ICC/semfyc/funcionesR.R")
 rellenar_var <- function(grupo, df){#grupo_propio = "dm"
   # Al data frame df (estructura id * grupo_propio y variable var), rellena var con un 1 si
   # el paciente, en el grupo "grupo", ha sido diagnosticado en AP.
@@ -127,6 +127,8 @@ levels(dx$comarca) <- str_replace(string = levels(dx$comarca), pattern = "OSI ",
 dx$falta_ing1_12m <- dx$falta_ing1 %m-% years(1)
 # 4. Calcular la fecha del primer ingreso mas 15 dias
 dx$falta_ing1_post15d <- dx$falta_ing1 + days(15)  
+#tb 30 dias
+dx$falta_ing1_post30d <- dx$falta_ing1 + days(30)  
 # 5. Calcular el inicio de la estancia indice
 dx$finicio_ing1 <- dx$falta_ing1 - days(dx$estancia1)
 ```
@@ -144,8 +146,10 @@ dx.ap.alta$fuente <- "ap_previo"
 ```{r dgAPAlta15d}
 # Dg de AP 15 dias despues del alta del ingreso indice. Consultar con Edu.
 dx.ap.alta15d <- dx.ap %>% filter(finicio >= finicio_ing1 & finicio <= falta_ing1_post15d )
+dx.ap.alta30d <- dx.ap %>% filter(finicio >= finicio_ing1 & finicio <= falta_ing1_post30d )
 #identificar
 dx.ap.alta15d$fuente <- "ap_15d_post"
+dx.ap.alta30d$fuente <- "ap_30d_post"
 ```
 
 ### Diagnosticos hospitalarios
@@ -187,11 +191,12 @@ dx.resto.alta$fuente <- as.factor(paste0(dx.resto.alta$tipo, "_previo"))
 ```
 
 ### Fusionar
-```{r}
+```{r fusionarFuentes}
 #--- Registro AP. 
 # Incluye dx previos al ingreso indice + Iniciados en los 15 dias posteriores al alta
 dx.ap.alta %>% nrow() #dx.ap.alta %>% unique() %>% nrow()
-dx.ap.alta15d %>% nrow()
+dx.ap.alta15d %>% nrow() #dx.ap.alta30d %>% nrow()
+# dx.registro.ap <- rbind(dx.ap.alta, dx.ap.alta30d) #dx.registro.ap %>% unique %>% nrow(), ok
 dx.registro.ap <- rbind(dx.ap.alta, dx.ap.alta15d) #dx.registro.ap %>% unique %>% nrow(), ok
 #--- Registro Hospital
 # Incluye dx previos al ingreso indice + Iniciados durante la estancia en el hospital
@@ -204,6 +209,7 @@ dx.resto.alta %>% nrow()
 #--- Unir todos (Registro completo, con todas las fuentes)
 dx.registro <- rbind(dx.registro.ap, dx.registro.hospi, dx.resto.alta)
 table(dx.registro$tipo, dx.registro$fuente)
+table(dx.registro$fuente)
 ```
 
 ```{r seleccionFinal}
@@ -215,7 +221,6 @@ nrow(dx.registro.ap)
 ```
 
 ## Calculo de variables binarias
-
 ### Binarias basadas en grupos CCS
 ```{r calculoBinarias}
 gruposCCS <- levels(dx.registro$grupo_propio)
@@ -263,9 +268,8 @@ dfpreval <- dfpreval %>% arrange(desc(preval))
 # Distancias (Sensibilidad AP)
 dfpreval$sensib_ap <- round(dfpreval$npreval_ap / dfpreval$npreval_dx * 100, 1)
 # Exportar a csv
-write.csv2(x = dfpreval, file = "semfyc.csv",sep = ";")
+# write.csv2(x = dfpreval, file = "semfyc.csv",sep = ";")
 ```
-
 
 ### Charlson
 ```{r calculoCharlsonAmbas}
@@ -295,17 +299,16 @@ dat0$ncharlson <- dfvars$nchar
 ```{r prevalenciasCharlson}
 #---- Basadas en hospi + AP.
 vars <- grep(pattern = "char_", x = names(dat0), value = TRUE) #17 variables, ok
-dfpreval <- as.data.frame(vars)
-dfpreval$vars <- str_replace(string = dfpreval$vars, pattern = "char_", replacement = "")
-names(dfpreval) <- "patol"
+dfpreval_char <- as.data.frame(vars)
+dfpreval_char$vars <- str_replace(string = dfpreval_char$vars, pattern = "char_", replacement = "")
+names(dfpreval_char) <- "patol"
 #
-patologias <- dfpreval$patol
+patologias <- dfpreval_char$patol
 preval <- sapply(X = 1:length(patologias), FUN = function(x){ #x=1
         round(sum(dat0[, paste0("char_", patologias[x])]) / nrow(dat0) * 100, 1)
 })
-dfpreval$preval <- preval
+dfpreval_char$preval <- preval
 ```
-
 
 ## Cifras para el poster
 ```{r cifrasBasicas}
@@ -367,12 +370,12 @@ rm(df2)
 df <- merge(x = df, y = dat0[, c("id", "grupo_edad", "sexo", "comarca", "uap")])
 ```
 
-```{r modelizacion}
-mod1 <- glmer(var ~ sexo + grupo_edad + (1|id) + (1|comarca)+ (1|uap) + (1|grupo_propio), family = binomial, data = df)
-summary(mod1)
-mod2 <- glmer(var ~ sexo + grupo_edad + (1|id) + (1|uap) + (1|grupo_propio), family = binomial, data = df)
-summary(mod2)
-mod3 <- glmer(var ~ sexo + grupo_edad + comarca + (1|grupo_propio), family = binomial, data = df)
+```{r modelizacion, eval = FALSE}
+# mod1 <- glmer(var ~ sexo + grupo_edad + (1|id) + (1|comarca)+ (1|uap) + (1|grupo_propio), family = binomial, data = df)
+# summary(mod1)
+# mod2 <- glmer(var ~ sexo + grupo_edad + (1|id) + (1|uap) + (1|grupo_propio), family = binomial, data = df)
+# summary(mod2)
+# mod3 <- glmer(var ~ sexo + grupo_edad + comarca + (1|grupo_propio), family = binomial, data = df)
 summary(mod3)
 #
 # CI para las comarcas (modelo 3)
@@ -383,6 +386,7 @@ se <- sqrt(diag(vcov(mod3)))
 exp(tab)
 ```
 
+## Graficos
 ```{r graficos_bruto}
 dfpreval <- dfpreval %>% filter(gruposCCS != "electrolitos")
 dfpreval <- dfpreval %>% arrange(preval_dx)
@@ -404,12 +408,14 @@ ggplot(data = dfpreval, aes(x = gruposCCS, y = preval_dx, colour = "Hospital+CE+
 dfpreval <- dfpreval %>% filter(gruposCCS != "electrolitos")
 dfpreval <- dfpreval %>% arrange(sensib_ap)
 dfpreval$gruposCCS <- factor(dfpreval$gruposCCS, levels = as.character(dfpreval$gruposCCS))
-
+#
+# png(filename = "/Users/ines/Documents/LHS/ICC/semfyc/images/grafico_sensib.png")
+# win.metafile(filename = "/Users/ines/Documents/LHS/ICC/semfyc/images/grafico_sensib.wmf")
 ggplot(data = dfpreval, aes(x = gruposCCS, y = sensib_ap)) + 
         geom_point(stat = "identity",size = 1.5, col = "blue") + 
         geom_line(stat = "identity", aes(group = 1),linetype = 2, col = "blue") +
          geom_text(data = dfpreval, aes(x = gruposCCS, y = sensib_ap, label = paste0(sensib_ap, "%"), group = 1), size = 3, col = "grey60", hjust = 1) +
         coord_flip()
-        
+dev.off()
 ```
 

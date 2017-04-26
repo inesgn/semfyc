@@ -2,3 +2,9 @@
 semfyc.csv
 
 semfyc.RData
+
+images/grafico_sensib.png
+
+*.csv
+
+.Rhistory
