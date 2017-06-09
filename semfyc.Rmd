@@ -333,7 +333,7 @@ table(df1$tipo)
 ```
 
 ## Modelo mixto
-```{r construirDF}
+```{r construirDF, eval = FALSE}
 #Objetivo: para cada combinacion (id, grupo propio) crear una variable categorica var
 # que valga:
 #--NA, si el paciente no ha sido diagnosticado en ninguna fuente
@@ -387,7 +387,7 @@ exp(tab)
 ```
 
 ## Graficos
-```{r graficos_bruto}
+```{r graficos_bruto, eval = FALSE}
 dfpreval <- dfpreval %>% filter(gruposCCS != "electrolitos")
 dfpreval <- dfpreval %>% arrange(preval_dx)
 dfpreval$gruposCCS <- factor(dfpreval$gruposCCS, levels = as.character(dfpreval$gruposCCS))
@@ -416,6 +416,6 @@ ggplot(data = dfpreval, aes(x = gruposCCS, y = sensib_ap)) +
         geom_line(stat = "identity", aes(group = 1),linetype = 2, col = "blue") +
          geom_text(data = dfpreval, aes(x = gruposCCS, y = sensib_ap, label = paste0(sensib_ap, "%"), group = 1), size = 3, col = "grey60", hjust = 1) +
         coord_flip()
-dev.off()
+# dev.off()
 ```
 
